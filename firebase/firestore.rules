@@ -1,0 +1,23 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /creations/{creationId} {
+      function signedIn() {
+        return request.auth != null;
+      }
+      function validCreation() {
+        return request.resource.data.authorId == request.auth.uid
+          && request.resource.data.kind in ['game', 'site']
+          && request.resource.data.title is string
+          && request.resource.data.title.size() <= 80
+          && request.resource.data.data is string
+          && request.resource.data.data.size() < 900000;
+      }
+      allow get, list, delete: if signedIn() && resource.data.authorId == request.auth.uid;
+      allow create: if signedIn() && validCreation();
+      allow update: if signedIn()
+        && resource.data.authorId == request.auth.uid
+        && validCreation();
+    }
+  }
+}

@@ -1,27 +1,24 @@
 # Forge Studio
 
-A browser-based HTML game editor prototype with a Three.js scene viewport, hierarchy, transform inspector, text editor, sandboxed preview, local project persistence, undo/redo snapshots, and ZIP export.
+Forge Studio is a browser-based game editor hosted on GitHub Pages. Open the live app at:
 
-## Run
+**https://yourneighborhoodyapper5-hash.github.io/PIXELS-/**
 
-Because the app uses JavaScript modules, open it through a local web server rather than `file://`. For example:
+## Included features
 
-```bash
-python3 -m http.server 8000
-```
+- 3D scene viewport with object hierarchy, transforms, materials, and visibility.
+- Built-in code editor and sandboxed game preview.
+- Local autosave in the current browser.
+- Optional Firebase Authentication and Firestore cloud projects.
+- Project JSON import and ZIP export.
+- Undo/redo and mobile-friendly side panels.
 
-Then visit `http://localhost:8000` from the same device. Three.js is loaded from jsDelivr, so the scene viewport requires an internet connection.
+## Enable cloud projects
 
-## Hosting on GitHub Pages
+Follow [Firebase setup](firebase/README.md). Local editing and export remain available if you don't sign in.
 
-Upload the contents of this folder to a GitHub repository, enable **Settings → Pages → Deploy from a branch**, and select the branch/root folder. No build step is required.
+## Notes
 
-## Features and limitations
-
-- Projects save to IndexedDB in the current browser/device.
-- Export Project ZIP downloads the project's web files plus `forge-project.json`.
-- Import Project JSON imports a Forge project data file; it does not yet import arbitrary ZIP files.
-- The code editor is a lightweight textarea, not Monaco.
-- Preview runs in a sandboxed iframe. Relative CSS and classic script references are inlined; relative module imports, `fetch()` of project files, binary assets, and server APIs are not bundled.
-- Firebase is not connected yet. The Firebase directory is reserved for a later stage; do not put secrets in client-side files.
-- This is a prototype, not a full Unity/Roblox Studio replacement.
+- Cloud projects are private to the signed-in owner under the included Firestore rules.
+- This is an evolving browser editor, not a full Unity or Roblox Studio replacement.
+- The preview runs untrusted project code in a sandboxed iframe.
