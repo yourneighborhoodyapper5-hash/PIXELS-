@@ -1,4 +1,117 @@
-export const FORMAT=1;
-export const STARTER={'index.html':'<!DOCTYPE html>\n<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>My Game</title><link rel="stylesheet" href="style.css"></head>\n<body><canvas id="c" width="480" height="320"></canvas><script src="game.js"><\/script></body></html>\n','style.css':'body{margin:0;background:#111;display:grid;place-items:center;height:100vh}canvas{background:#222;border:1px solid #444;max-width:100%;height:auto}\n','game.js':"const c=document.getElementById('c'),g=c.getContext('2d');\nlet x=60,y=60,vx=2.2,vy=1.7;\nconsole.log('Game started');\nfunction tick(){x+=vx;y+=vy;if(x<10||x>470)vx=-vx;if(y<10||y>310)vy=-vy;g.clearRect(0,0,480,320);g.fillStyle='#ddd';g.beginPath();g.arc(x,y,10,0,7);g.fill();requestAnimationFrame(tick)}tick();\n"};
-export function newProject(name='Untitled Project'){return{format:FORMAT,id:crypto.randomUUID(),name,updated:Date.now(),objects:[{id:'ground',name:'Ground',type:'plane',visible:true,p:[0,-.05,0],r:[-Math.PI/2,0,0],s:[12,12,1],color:0x3a3a40,rough:.9,metal:0},{id:'cube1',name:'Cube',type:'box',visible:true,p:[0,.5,0],r:[0,0,0],s:[1,1,1],color:0x9a9aa3,rough:.6,metal:.1}],files:{...STARTER}}}
-export function migrate(p){if(!p||typeof p!=='object')throw new Error('Not a Forge project');if(p.format==null)p.format=1;if(p.format>FORMAT)throw new Error(`Project format ${p.format} is newer than this editor supports (${FORMAT})`);if(!Array.isArray(p.objects))p.objects=[];if(typeof p.id!=='string'||!p.id)p.id=crypto.randomUUID();p.name=String(p.name||'Untitled');p.files=p.files&&typeof p.files==='object'?p.files:{...STARTER};return p}
+
+export const FORMAT = 1;
+
+export const STARTER = {
+  'index.html': '<!DOCTYPE html>\n<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>My Game</title><link rel="stylesheet" href="style.css"></head>\n<body><canvas id="c" width="480" height="320"></canvas><script src="game.js"><\/script></body></html>\n',
+
+  'style.css': 'body{margin:0;background:#111;display:grid;place-items:center;height:100vh}canvas{background:#222;border:1px solid #444;max-width:100%;height:auto}\n',
+
+  'game.js': "const c=document.getElementById('c'),g=c.getContext('2d');\nlet x=60,y=60,vx=2.2,vy=1.7;\nconsole.log('Game started');\nfunction tick(){x+=vx;y+=vy;if(x<10||x>470)vx=-vx;if(y<10||y>310)vy=-vy;g.clearRect(0,0,480,320);g.fillStyle='#ddd';g.beginPath();g.arc(x,y,10,0,7);g.fill();requestAnimationFrame(tick)}tick();\n"
+};
+
+function createMainCamera() {
+  return {
+    id: 'camera-main',
+    name: 'Main Camera',
+    type: 'camera',
+    visible: true,
+    p: [6, 4, 6],
+    r: [-0.35, 0.78, 0],
+    s: [1, 1, 1],
+    fov: 60
+  };
+}
+
+export function newProject(name = 'Untitled Project') {
+  return {
+    format: FORMAT,
+    id: crypto.randomUUID(),
+    name,
+    updated: Date.now(),
+
+    objects: [
+      {
+        id: 'ground',
+        name: 'Ground',
+        type: 'plane',
+        visible: true,
+        p: [0, -0.05, 0],
+        r: [-Math.PI / 2, 0, 0],
+        s: [12, 12, 1],
+        color: 0x3a3a40,
+        rough: 0.9,
+        metal: 0
+      },
+      {
+        id: 'cube1',
+        name: 'Cube',
+        type: 'box',
+        visible: true,
+        p: [0, 0.5, 0],
+        r: [0, 0, 0],
+        s: [1, 1, 1],
+        color: 0x9a9aa3,
+        rough: 0.6,
+        metal: 0.1
+      },
+      createMainCamera()
+    ],
+
+    files: { ...STARTER }
+  };
+}
+
+export function migrate(p) {
+  if (!p || typeof p !== 'object') {
+    throw new Error('Not a Forge project');
+  }
+
+  if (p.format == null) p.format = FORMAT;
+
+  if (p.format > FORMAT) {
+    throw new Error(
+      `Project format ${p.format} is newer than this editor supports (${FORMAT})`
+    );
+  }
+
+  if (!Array.isArray(p.objects)) {
+    p.objects = [];
+  }
+
+  if (typeof p.id !== 'string' || !p.id) {
+    p.id = crypto.randomUUID();
+  }
+
+  p.name = String(p.name || 'Untitled');
+
+  p.files =
+    p.files && typeof p.files === 'object'
+      ? p.files
+      : { ...STARTER };
+
+  // Keep existing cameras and their settings.
+  // Only create a default camera when the project has none.
+  const hasCamera = p.objects.some(
+    object => object && object.type === 'camera'
+  );
+
+  if (!hasCamera) {
+    p.objects.push(createMainCamera());
+  }
+
+  // Supply safe defaults for older or partially saved camera objects.
+  for (const object of p.objects) {
+    if (!object || object.type !== 'camera') continue;
+
+    object.name = String(object.name || 'Main Camera');
+    object.visible = object.visible !== false;
+    object.p = Array.isArray(object.p) ? object.p : [6, 4, 6];
+    object.r = Array.isArray(object.r) ? object.r : [-0.35, 0.78, 0];
+    object.s = Array.isArray(object.s) ? object.s : [1, 1, 1];
+    object.fov = Number.isFinite(Number(object.fov))
+      ? Math.min(120, Math.max(20, Number(object.fov)))
+      : 60;
+  }
+
+  return p;
+}
