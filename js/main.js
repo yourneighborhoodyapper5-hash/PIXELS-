@@ -7,6 +7,7 @@ import { newProject, migrate } from './project.js';
 import { run as runPreview, stop as stopPreview } from './preview.js';
 import { zip, downloadBlob } from './zip.js';
 import { setupCommunity } from './community.js';
+import { getCurrentUser, onAuthChange, signInOrCreate, signOut, saveCloudProject, listCloudProjects } from './firebase.js';
 
 const $ = id => document.getElementById(id);
 const provider = new LocalProvider();
@@ -60,7 +61,7 @@ function initScene() {
   scene.add(new THREE.HemisphereLight(0xffffff,0x45454c,2)); const sun=new THREE.DirectionalLight(0xffffff,2); sun.position.set(5,9,6); sun.castShadow=true; scene.add(sun); scene.add(new THREE.GridHelper(40,40,0x4a4a50,0x303035));
   gizmo=new TransformControls(camera,renderer.domElement); gizmo.addEventListener('dragging-changed',e=>orbit.enabled=!e.value); gizmo.addEventListener('objectChange',()=>{syncObjectFromMesh();renderInspector()}); gizmo.addEventListener('mouseUp',()=>{syncObjectFromMesh();commit()});
   // Three.js r160 requires adding the TransformControls helper, not the controls instance.
-  scene.add(gizmo.getHelper());
+  scene.add(typeof gizmo.getHelper === 'function' ? gizmo.getHelper() : gizmo);
   const resize=()=>{const w=Math.max(1,host.clientWidth),h=Math.max(1,host.clientHeight);renderer.setSize(w,h,false);camera.aspect=w/h;camera.updateProjectionMatrix()};
   if ('ResizeObserver' in window) { resizeObserver=new ResizeObserver(resize); resizeObserver.observe(host); }
   window.addEventListener('resize',resize); resize();
@@ -96,7 +97,73 @@ function importProjectFlow(){const input=document.createElement('input');input.t
 async function openLocalProjectFlow(){try{const saved=(await provider.list()).sort((a,b)=>(b.updated||0)-(a.updated||0));if(!saved.length){alert('No saved projects found in this browser on this device.');return}const answer=prompt('Open a saved local project:\n\n'+saved.map((p,i)=>(i+1)+'. '+(p.name||'Untitled Project')).join('\n')+'\n\nEnter a number:','1');if(answer===null)return;const index=Number(answer)-1;if(!Number.isInteger(index)||index<0||index>=saved.length){alert('Invalid project number.');return}if(dirty&&!confirm('Replace the current project?'))return;project=migrate(saved[index]);resetProjectUI();log('Opened local project: '+project.name,'ok')}catch(e){log('Could not open local projects: '+e.message,'error');alert('Could not open local projects.\n'+e.message)}}
 function setupMenus(){const groups=[['File',[['New project',newProjectFlow],['Import project JSON',importProjectFlow],['Open saved local project',openLocalProjectFlow],['Save now',saveProject],['Export project ZIP',downloadProject]]],['Create',[['Cube',()=>addObject('box')],['Sphere',()=>addObject('sphere')],['Plane',()=>addObject('plane')],['Cylinder',()=>addObject('cylinder')],['Cone',()=>addObject('cone')],['Point light',()=>addObject('light')],['Delete selected',removeSelected]]],['View',[['Scene',()=>switchView('scene')],['Code',()=>switchView('code')],['Preview',()=>switchView('preview')],['Community',()=>switchView('community')],['Project Files',()=>showDock('files')],['Console',()=>showDock('console')]]],['Help',[['About Forge Studio',()=>alert('Forge Studio\nBrowser-based game editor. Projects autosave in this browser. Export a ZIP for backup.')]]]];const host=$('menus');host.replaceChildren();for(const [label,actions] of groups){const b=document.createElement('button');b.type='button';b.textContent=label;b.onclick=()=>{document.querySelectorAll('.menu-pop').forEach(p=>p.remove());const pop=document.createElement('div');pop.className='menu-pop';const r=b.getBoundingClientRect();pop.style.top=Math.min(innerHeight-180,r.bottom)+'px';pop.style.left=Math.max(6,Math.min(r.left,innerWidth-220))+'px';for(const [name,action] of actions){const item=document.createElement('button');item.type='button';item.textContent=name;item.onclick=()=>{pop.remove();action()};pop.append(item)}document.body.append(pop);const close=e=>{if(!pop.contains(e.target)&&e.target!==b){pop.remove();document.removeEventListener('pointerdown',close)}};setTimeout(()=>document.addEventListener('pointerdown',close),0)};host.append(b)}}
 function setupResize(){function bind(id,side){$(id).addEventListener('pointerdown',e=>{if(innerWidth<821)return;const start=e.clientX,w=side==='left'?$('explorer').offsetWidth:$('inspector').offsetWidth;const move=ev=>{const d=ev.clientX-start;if(side==='left')$('explorer').style.width=Math.max(140,Math.min(360,w+d))+'px';else $('inspector').style.width=Math.max(180,Math.min(420,w-d))+'px'};const up=()=>{window.removeEventListener('pointermove',move);window.removeEventListener('pointerup',up)};window.addEventListener('pointermove',move);window.addEventListener('pointerup',up)})}bind('rzL','left');bind('rzR','right');$('rzB').addEventListener('pointerdown',e=>{const y=e.clientY,h=$('bottom').offsetHeight;const move=ev=>$('bottom').style.flexBasis=Math.max(65,Math.min(innerHeight*.5,h+y-ev.clientY))+'px';const up=()=>{window.removeEventListener('pointermove',move);window.removeEventListener('pointerup',up)};window.addEventListener('pointermove',move);window.addEventListener('pointerup',up)})}
-function setup(){setupMenus();try{initScene()}catch(e){log('3D scene failed: '+(e.stack||e.message||e),'error');$('scene').textContent='3D scene unavailable. Code tools may still work.'}selectedId=project.objects.find(o=>o.id===selectedId)?.id||project.objects[0]?.id||null;activeFile=project.files[activeFile]!==undefined?activeFile:Object.keys(project.files)[0]||'';history.reset(JSON.stringify(project));renderTree();renderInspector();renderFiles();renderEditor();
+function setupAuth() {
+  const header = $('menubar');
+  if (!header || $('authButton')) return;
+  const button = document.createElement('button');
+  button.id = 'authButton'; button.type = 'button'; button.textContent = 'Sign in';
+  button.style.cssText = 'margin-left:8px;white-space:nowrap';
+  header.append(button);
+
+  const panel = document.createElement('dialog');
+  panel.id = 'authDialog';
+  panel.style.cssText = 'background:#1b1b1f;color:#eee;border:1px solid #444;border-radius:10px;padding:20px;max-width:calc(100vw - 32px);width:340px';
+  panel.innerHTML = '<form id="authForm" style="display:grid;gap:10px"><h2 id="authTitle" style="margin:0;font-size:18px">Sign in to Forge</h2><p id="authMessage" style="margin:0;color:#aaa;font-size:12px">Use your Firebase account to save projects to the cloud.</p><label>Email<input id="authEmail" type="email" required autocomplete="email" style="display:block;width:100%;box-sizing:border-box;margin-top:4px"></label><label>Password<input id="authPassword" type="password" required minlength="6" autocomplete="current-password" style="display:block;width:100%;box-sizing:border-box;margin-top:4px"></label><div style="display:flex;gap:8px;flex-wrap:wrap"><button id="authSubmit" type="submit">Sign in</button><button id="authCreate" type="button">Create account</button><button id="authCancel" type="button">Cancel</button></div></form>';
+  document.body.append(panel);
+  let createMode = false;
+  const form = panel.querySelector('#authForm');
+  const msg = panel.querySelector('#authMessage');
+  const title = panel.querySelector('#authTitle');
+  const submit = panel.querySelector('#authSubmit');
+  const email = panel.querySelector('#authEmail');
+  const password = panel.querySelector('#authPassword');
+  const setMode = create => {
+    createMode = create;
+    title.textContent = create ? 'Create a Forge account' : 'Sign in to Forge';
+    submit.textContent = create ? 'Create account' : 'Sign in';
+    password.autocomplete = create ? 'new-password' : 'current-password';
+    msg.textContent = create ? 'Create an account with your email and a password (6+ characters).' : 'Use your Firebase account to save projects to the cloud.';
+  };
+  button.onclick = () => {
+    if (getCurrentUser()) {
+      if (confirm('Sign out of Forge Studio?')) signOut().catch(error => log('Sign out failed: ' + error.message, 'error'));
+    } else { setMode(false); panel.showModal(); }
+  };
+  panel.querySelector('#authCreate').onclick = () => setMode(true);
+  panel.querySelector('#authCancel').onclick = () => panel.close();
+  form.onsubmit = async event => {
+    event.preventDefault(); submit.disabled = true;
+    try {
+      await signInOrCreate(email.value.trim(), password.value, createMode);
+      panel.close(); password.value = '';
+      log(createMode ? 'Firebase account created and signed in.' : 'Signed in to Firebase.', 'ok');
+    } catch (error) { msg.textContent = error.message || 'Authentication failed.'; }
+    finally { submit.disabled = false; }
+  };
+  onAuthChange(user => {
+    button.textContent = user ? 'Sign out (' + (user.email || 'account') + ')' : 'Sign in';
+    $('cloudSave').disabled = !user; $('cloudOpen').disabled = !user;
+    $('cloudStatus').textContent = user ? 'Signed in Â· cloud save available' : 'Not signed in';
+  });
+  $('cloudSave').onclick = async () => {
+    try { await saveCloudProject(project); log('Saved project to Firebase Cloud: ' + project.name, 'ok'); $('cloudStatus').textContent = 'Cloud saved'; }
+    catch (error) { log('Cloud save failed: ' + error.message, 'error'); alert('Cloud save failed: ' + error.message); }
+  };
+  $('cloudOpen').onclick = async () => {
+    try {
+      const items = await listCloudProjects();
+      if (!items.length) { alert('No cloud projects found for this account.'); return; }
+      const answer = prompt('Open a cloud project:\n\n' + items.map((item, i) => (i + 1) + '. ' + item.name).join('\n') + '\n\nEnter a number:', '1');
+      if (answer === null) return;
+      const index = Number(answer) - 1;
+      if (!Number.isInteger(index) || index < 0 || index >= items.length) { alert('Invalid project number.'); return; }
+      if (dirty && !confirm('Replace the current project?')) return;
+      project = migrate(items[index].project); resetProjectUI(); log('Opened cloud project: ' + project.name, 'ok');
+    } catch (error) { log('Cloud open failed: ' + error.message, 'error'); alert('Cloud open failed: ' + error.message); }
+  };
+}
+
+function setup(){setupMenus();setupAuth();try{initScene()}catch(e){log('3D scene failed: '+(e.stack||e.message||e),'error');$('scene').textContent='3D scene unavailable. Code tools may still work.'}selectedId=project.objects.find(o=>o.id===selectedId)?.id||project.objects[0]?.id||null;activeFile=project.files[activeFile]!==undefined?activeFile:Object.keys(project.files)[0]||'';history.reset(JSON.stringify(project));renderTree();renderInspector();renderFiles();renderEditor();
   community=setupCommunity({getProject:()=>project,markDirty:()=>{setDirty();history.push(JSON.stringify(project));updateUndoButtons()},openFile,createFile:()=>$('fnew').click(),switchView,log});
   document.querySelectorAll('[data-v]').forEach(b=>b.onclick=()=>switchView(b.dataset.v));document.querySelectorAll('[data-bottom]').forEach(b=>b.onclick=()=>showDock(b.dataset.bottom));$('q').addEventListener('input',renderTree);$('fsearch').addEventListener('input',renderFiles);
   $('fnew').onclick=()=>{let path=prompt('New file path (example: scripts/player.js)');if(!path)return;path=path.trim();if(path.startsWith('/')||path.includes('\\')||path.split('/').includes('..'))return log('Use a safe relative file path without ..','warn');if(path in project.files)return log('File already exists','warn');project.files[path]='';activeFile=path;openedFiles.add(path);commit();renderEditor();switchView('code')};
