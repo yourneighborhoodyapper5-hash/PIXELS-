@@ -1,1 +1,169 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Pixelworks</title>
+  <link rel="stylesheet" href="css/style.css">
+  <script type="importmap">
+    { "imports": { "three": "./vendor/three/three.module.js" } }
+  </script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">Pixelworks</div>
+    <nav class="modes">
+      <button data-mode="studio" class="active">Game Studio</button>
+      <button data-mode="site">Site Builder</button>
+      <button data-mode="community">Community</button>
+    </nav>
+  </header>
 
+  <main>
+    <!-- GAME STUDIO -->
+    <section id="studio" class="mode active">
+      <div class="toolbar">
+        <div class="group">
+          <button data-add="cube">+ Cube</button>
+          <button data-add="sphere">+ Sphere</button>
+          <button data-add="cylinder">+ Cylinder</button>
+          <button data-add="plane">+ Floor</button>
+          <button data-add="spawn">+ Spawn</button>
+        </div>
+        <div class="group">
+          <button data-gizmo="translate" class="active" title="Shortcut: W">Move</button>
+          <button data-gizmo="rotate" title="Shortcut: E">Rotate</button>
+          <button data-gizmo="scale" title="Shortcut: R">Scale</button>
+        </div>
+        <div class="group">
+          <button id="dupBtn" title="Ctrl+D">Duplicate</button>
+          <button id="delBtn" title="Delete key">Delete</button>
+        </div>
+        <div class="spacer"></div>
+        <div class="group">
+          <button id="newBtn">New</button>
+          <button id="saveBtn">Save file</button>
+          <label class="button">Open file<input type="file" id="openFile" accept=".json,application/json" hidden></label>
+          <button id="publishStudio">Publish</button>
+          <button id="playBtn" class="primary">▶ Play</button>
+        </div>
+      </div>
+
+      <div class="studio-body">
+        <aside class="panel">
+          <h3>Hierarchy</h3>
+          <ul id="outliner" class="outliner"></ul>
+        </aside>
+
+        <div id="viewport" class="viewport">
+          <div id="playOverlay" class="play-overlay" hidden>
+            <div class="play-bar">
+              <span>Playing: WASD move · Shift run · Space jump · drag to look · Esc stop</span>
+              <button id="stopBtn">■ Stop</button>
+            </div>
+            <pre id="playLog" class="play-log"></pre>
+          </div>
+        </div>
+
+        <aside class="panel">
+          <h3>Properties</h3>
+          <p id="noSel" class="muted">Select an object in the view or the hierarchy to edit it.</p>
+          <div id="props" hidden>
+            <label>Name<input data-f="name"></label>
+            <fieldset>
+              <legend>Position</legend>
+              <div class="row3">
+                <input type="number" step="0.1" data-f="px">
+                <input type="number" step="0.1" data-f="py">
+                <input type="number" step="0.1" data-f="pz">
+              </div>
+            </fieldset>
+            <fieldset>
+              <legend>Rotation (degrees)</legend>
+              <div class="row3">
+                <input type="number" step="1" data-f="rx">
+                <input type="number" step="1" data-f="ry">
+                <input type="number" step="1" data-f="rz">
+              </div>
+            </fieldset>
+            <fieldset>
+              <legend>Scale</legend>
+              <div class="row3">
+                <input type="number" step="0.1" data-f="sx">
+                <input type="number" step="0.1" data-f="sy">
+                <input type="number" step="0.1" data-f="sz">
+              </div>
+            </fieldset>
+            <label>Color<input type="color" data-f="color"></label>
+            <label>Script (runs every frame during Play)
+              <textarea data-f="script" rows="9" spellcheck="false"
+                placeholder="// obj = this object, dt = seconds since last frame, t = total time&#10;// input.keys.KeyW, input.player (position of the player)&#10;// THREE is available&#10;obj.rotation.y += dt;"></textarea>
+            </label>
+          </div>
+        </aside>
+      </div>
+    </section>
+
+    <!-- SITE BUILDER -->
+    <section id="site" class="mode">
+      <div class="site-wrap">
+        <aside class="panel">
+          <h3>Your sites</h3>
+          <div class="row">
+            <select id="templateSel">
+              <option value="blank">Blank canvas</option>
+              <option value="landing">Landing page</option>
+              <option value="portfolio">Portfolio</option>
+              <option value="game">Canvas mini-game</option>
+            </select>
+            <button id="newSite" class="primary">New</button>
+          </div>
+          <ul id="siteList" class="outliner"></ul>
+        </aside>
+
+        <div class="site-main">
+          <div class="toolbar">
+            <div class="group">
+              <button data-tab="html" class="active">HTML</button>
+              <button data-tab="css">CSS</button>
+              <button data-tab="js">JS</button>
+            </div>
+            <input id="siteName" class="name-input" placeholder="Site name">
+            <div class="spacer"></div>
+            <div class="group">
+              <button id="siteSave">Save</button>
+              <button id="siteDownload">Download .html</button>
+              <button id="sitePublish">Publish</button>
+              <button id="siteDelete">Delete</button>
+            </div>
+          </div>
+          <div class="site-editor">
+            <textarea id="code" spellcheck="false"></textarea>
+            <iframe id="preview" sandbox="allow-scripts allow-forms allow-modals" title="Live preview"></iframe>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- COMMUNITY -->
+    <section id="community" class="mode">
+      <div class="toolbar">
+        <div class="group">
+          <button data-kind="all" class="active">All</button>
+          <button data-kind="game">Games</button>
+          <button data-kind="site">Sites</button>
+        </div>
+        <div class="spacer"></div>
+        <span id="authState" class="muted"></span>
+        <button id="authBtn" class="primary">Sign in with Google</button>
+        <button id="refreshBtn">Refresh</button>
+      </div>
+      <div id="setupNote" class="notice" hidden></div>
+      <div id="creations" class="grid"></div>
+    </section>
+  </main>
+
+  <div id="toast" class="toast" hidden></div>
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>
