@@ -1,0 +1,1 @@
+Firebase integration is intentionally not enabled in this build. Add the SDK and provider only after Authentication, App Check, Firestore rules, and project data ownership have been tested. Never place Admin SDK/service-account credentials in this browser app.
