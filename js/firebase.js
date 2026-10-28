@@ -9,8 +9,8 @@ const firebaseConfig = {
   projectId: 'pixel-storage-7e9bd',
   storageBucket: 'pixel-storage-7e9bd.firebasestorage.app',
   messagingSenderId: '617800846844',
-  appId: '1:617800846844:web:442dd97c47400427ac7679',
-  measurementId: 'G-TNJ48MVSCD'
+  appId: '1:617800846844:web:67ad08fe50ebeb74ac7679',
+  measurementId: 'G-22DYLG5M89'
 };
 
 const app = initializeApp(firebaseConfig);
