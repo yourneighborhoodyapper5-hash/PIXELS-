@@ -1,7 +1,3 @@
-import { initializeApp } from 'https://www.gstatic.com/firebasejs/12.4.0/firebase-app.js';
-import { getAuth, onAuthStateChanged, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut as firebaseSignOut } from 'https://www.gstatic.com/firebasejs/12.4.0/firebase-auth.js';
-import { getFirestore, collection, doc, getDocs, query, setDoc, where } from 'https://www.gstatic.com/firebasejs/12.4.0/firebase-firestore.js';
-
 // Firebase web config is public by design. Never put Admin SDK credentials here.
 const firebaseConfig = {
   apiKey: 'AIzaSyDNsB5nAjWzTVuP1HnWnxmBhMCZR21BYsQ',
@@ -13,18 +9,47 @@ const firebaseConfig = {
   measurementId: 'G-22DYLG5M89'
 };
 
-const app = initializeApp(firebaseConfig);
-const auth = getAuth(app);
-const db = getFirestore(app);
+const SDK = 'https://www.gstatic.com/firebasejs/12.4.0/';
+let sdk = null, auth = null, db = null, loading = null;
 let currentUser = null;
 const listeners = new Set();
-export const firebaseReady = new Promise(resolve => {
-  onAuthStateChanged(auth, user => {
-    currentUser = user;
-    for (const fn of listeners) fn(user);
-    resolve(user);
-  });
-});
+
+// The Firebase SDK is loaded lazily so a blocked or slow gstatic.com can never stop the editor itself from starting.
+function loadFirebase() {
+  if (!loading) {
+    loading = (async () => {
+      const [appMod, authMod, storeMod] = await Promise.all([
+        import(SDK + 'firebase-app.js'),
+        import(SDK + 'firebase-auth.js'),
+        import(SDK + 'firebase-firestore.js')
+      ]);
+      const app = appMod.initializeApp(firebaseConfig);
+      auth = authMod.getAuth(app);
+      db = storeMod.getFirestore(app);
+      sdk = { ...authMod, ...storeMod };
+      return sdk;
+    })();
+    loading.catch(() => { loading = null; });
+  }
+  return loading;
+}
+
+export const firebaseReady = (async () => {
+  try {
+    await loadFirebase();
+    return await new Promise(resolve => {
+      sdk.onAuthStateChanged(auth, user => {
+        currentUser = user;
+        for (const fn of listeners) fn(user);
+        resolve(user);
+      });
+    });
+  } catch (error) {
+    console.warn('Firebase unavailable; local editing still works.', error);
+    return null;
+  }
+})();
+
 export const getCurrentUser = () => currentUser;
 export function onAuthChange(fn) {
   listeners.add(fn);
@@ -32,19 +57,21 @@ export function onAuthChange(fn) {
   return () => listeners.delete(fn);
 }
 export async function signInOrCreate(email, password, create) {
-  if (create) return (await createUserWithEmailAndPassword(auth, email, password)).user;
-  return (await signInWithEmailAndPassword(auth, email, password)).user;
+  await loadFirebase();
+  if (create) return (await sdk.createUserWithEmailAndPassword(auth, email, password)).user;
+  return (await sdk.signInWithEmailAndPassword(auth, email, password)).user;
 }
-export async function signOut() { await firebaseSignOut(auth); }
+export async function signOut() { await loadFirebase(); await sdk.signOut(auth); }
 function requireUser() {
   if (!currentUser) throw new Error('Sign in first.');
   return currentUser;
 }
 export async function saveCloudProject(project) {
   const user = requireUser();
+  await loadFirebase();
   const data = JSON.stringify(project);
   if (data.length >= 900000) throw new Error('This project is too large for the current Firestore document limit.');
-  await setDoc(doc(db, 'creations', project.id), {
+  await sdk.setDoc(sdk.doc(db, 'creations', project.id), {
     authorId: user.uid,
     kind: 'game',
     title: String(project.name || 'Untitled').slice(0, 80),
@@ -54,7 +81,8 @@ export async function saveCloudProject(project) {
 }
 export async function listCloudProjects() {
   const user = requireUser();
-  const result = await getDocs(query(collection(db, 'creations'), where('authorId', '==', user.uid)));
+  await loadFirebase();
+  const result = await sdk.getDocs(sdk.query(sdk.collection(db, 'creations'), sdk.where('authorId', '==', user.uid)));
   return result.docs.map(item => {
     const data = item.data();
     let project;

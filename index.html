@@ -35,7 +35,7 @@
     #toolbar button,
     #toolbar select { flex-shrink: 0; }
 
-    #run { color: #b9d9b5; }
+    #run, #play { color: #b9d9b5; }
     #stop { color: #d7a4a4; }
 
     #scene { overflow: hidden; }
@@ -371,7 +371,8 @@
     <button id="bredo" type="button" disabled>Redo</button>
 
     <i class="sep"></i>
-    <button id="run" type="button">Run</button>
+    <button id="run" type="button" title="Run the project's index.html, CSS and JavaScript">Run</button>
+    <button id="play" type="button" title="Play the 3D scene with its behavior scripts">Play Scene</button>
     <button id="stop" type="button">Stop</button>
     <button id="localOpen" type="button">Open local</button>
     <button id="cloudSave" type="button" disabled>Cloud save</button>
@@ -528,6 +529,6 @@
 
 </div>
 
-<script type="module" src="js/main.js"></script>
+<script type="module" src="js/bootstrap.js"></script>
 </body>
 </html>

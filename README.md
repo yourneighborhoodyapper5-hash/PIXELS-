@@ -7,7 +7,9 @@ Forge Studio is a browser-based game editor hosted on GitHub Pages. Open the liv
 ## Included features
 
 - 3D scene viewport with object hierarchy, transforms, materials, and visibility.
-- Built-in code editor and sandboxed game preview.
+- Parent/child hierarchy with a right-click menu (Rename, Duplicate, Set Parent, Unparent, Delete Object).
+- Script behaviors on objects (`start`/`update`/`stop`), run in the sandboxed **Play Scene** preview.
+- Built-in code editor and sandboxed preview: **Run** executes the project's HTML/CSS/JS, **Stop** ends it.
 - Local autosave in the current browser.
 - Optional Firebase Authentication and Firestore cloud projects.
 - Project JSON import and ZIP export.

@@ -1,3 +1,4 @@
+import { normalizeScripts } from './behaviors.js';
 
 export const FORMAT = 1;
 
@@ -160,6 +161,9 @@ export function migrate(input) {
 
     object.parentId =
       object.parentId != null ? String(object.parentId) : null;
+
+    // Optional behavior list (added after format v1 shipped; older projects simply don't have it).
+    normalizeScripts(object);
   }
 
   if (!project.objects.some(object => object.type === 'camera')) {
