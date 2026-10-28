@@ -1,106 +1,118 @@
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { TransformControls } from 'three/addons/controls/TransformControls.js';
+import { History } from './history.js';
+import { LocalProvider } from './storage.js';
+import { newProject, migrate } from './project.js';
+import { run as runPreview, stop as stopPreview } from './preview.js';
+import { zip, downloadBlob } from './zip.js';
+import { setupCommunity } from './community.js';
 
-function switchView(view) {
-  document.querySelectorAll('#vtabs button').forEach(b => {
-    b.classList.toggle('on', b.dataset.v === view);
-  });
+const $ = id => document.getElementById(id);
+const provider = new LocalProvider();
+const history = new History(100);
+let project = newProject('My First Game');
+let selectedId = null, activeFile = 'game.js', dirty = false, saveTimer = null;
+let scene, camera, renderer, controls, gizmo;
+let meshes = new Map(), transformMode = 'translate', worldSpace = true, snap = 0, suppressHistory = false;
+const openedFiles = new Set(['index.html', 'style.css', 'game.js']);
+let community = null;
+let firebaseReady = Promise.resolve(null), getCurrentUser = () => null, signInOrCreate = async () => { throw new Error('Firebase unavailable'); }, signOut = async () => {}, saveCloudProject = async () => { throw new Error('Firebase unavailable'); }, listCloudProjects = async () => [], onAuthChange = fn => { fn(null); return () => {}; };
 
-  for (const id of ['scene', 'code', 'preview', 'community']) {
-    $(id).hidden = id !== view;
-  }
-
-  if (view === 'scene' && renderer) {
-    renderer.setSize(
-      $('scene').clientWidth || 1,
-      $('scene').clientHeight || 1,
-      false
-    );
-  }
-
-  if (view === 'community') renderCommunity();
+function log(message, level='info') {
+  const root = $('log'); if (!root) return;
+  const row = document.createElement('div'); row.className = `l ${level}`;
+  const time = document.createElement('i'); time.textContent = new Date().toLocaleTimeString();
+  const text = document.createElement('span'); text.textContent = String(message);
+  row.append(time, text); root.append(row); root.scrollTop = root.scrollHeight;
 }
+window.addEventListener('error', e => { if (e.error) log(`JavaScript error: ${e.message} (${e.filename || 'unknown file'}:${e.lineno || 0}:${e.colno || 0})`, 'error'); });
+window.addEventListener('unhandledrejection', e => log(`Unhandled promise: ${e.reason?.stack || e.reason?.message || String(e.reason)}`, 'error'));
 
-const communityResources = [
-  {
-    name: 'Kenney',
-    category: 'Free game assets',
-    tags: 'models textures sprites ui',
-    url: 'https://kenney.nl/assets'
-  },
-  {
-    name: 'Poly Haven',
-    category: 'Textures and 3D assets',
-    tags: 'textures hdr environment models',
-    url: 'https://polyhaven.com'
-  },
-  {
-    name: 'ambientCG',
-    category: 'Free materials',
-    tags: 'pbr textures materials',
-    url: 'https://ambientcg.com'
-  },
-  {
-    name: 'OpenGameArt',
-    category: 'Community game assets',
-    tags: 'sprites models music sound',
-    url: 'https://opengameart.org'
-  },
-  {
-    name: 'Freesound',
-    category: 'Sound effects',
-    tags: 'audio music sound effects',
-    url: 'https://freesound.org'
-  },
-  {
-    name: 'itch.io Assets',
-    category: 'Game asset marketplace',
-    tags: 'sprites models sounds packs',
-    url: 'https://itch.io/game-assets'
-  },
-  {
-    name: 'Three.js Examples',
-    category: '3D development examples',
-    tags: 'three js webgl 3d code',
-    url: 'https://threejs.org/examples/'
-  }
-];
-
-function renderCommunity() {
-  const grid = $('assetGrid');
-  if (!grid) return;
-
-  const query = ($('assetSearch')?.value || '').trim().toLowerCase();
-  grid.replaceChildren();
-
-  const results = communityResources.filter(item =>
-    `${item.name} ${item.category} ${item.tags}`
-      .toLowerCase()
-      .includes(query)
-  );
-
-  for (const resource of results) {
-    const card = document.createElement('article');
-    card.className = 'asset-card';
-
-    const title = document.createElement('strong');
-    title.textContent = resource.name;
-
-    const description = document.createElement('p');
-    description.textContent = resource.category;
-
-    const link = document.createElement('a');
-    link.href = resource.url;
-    link.target = '_blank';
-    link.rel = 'noopener noreferrer';
-    link.textContent = 'Open resource ↗';
-
-    card.append(title, description, link);
-    grid.append(card);
-  }
-
-  if (!results.length) {
-    const empty = document.createElement('p');
-    empty.className = 'empty';
-    empty.textContent = 'No matching resources found.';
-    grid.append(empty);
-  }
+function setDirty() { dirty = true; $('save').textContent = 'Unsaved changes'; clearTimeout(saveTimer); saveTimer = setTimeout(saveProject, 500); }
+function snapshot() { if (!suppressHistory) history.push(JSON.stringify(project)); updateUndoButtons(); }
+function updateUndoButtons() { $('bundo').disabled = !history.canUndo; $('bredo').disabled = !history.canRedo; }
+async function saveProject() {
+  project.updated = Date.now();
+  try { await provider.put(project); dirty = false; $('save').textContent = 'Saved locally'; }
+  catch (e) { $('save').textContent = 'Save failed'; log(`Local save failed: ${e.message}`, 'error'); }
 }
+function commit() { setDirty(); snapshot(); renderTree(); renderInspector(); renderFiles(); community?.renderDock(); }
+function restore(serialized) {
+  if (!serialized) return;
+  try { suppressHistory = true; project = migrate(JSON.parse(serialized)); selectedId = project.objects[0]?.id || null; activeFile = project.files[activeFile] != null ? activeFile : Object.keys(project.files)[0] || ''; syncScene(); renderTree(); renderInspector(); renderFiles(); renderEditor(); community?.renderDock(); setDirty(); }
+  catch (e) { log(`Undo/redo failed: ${e.message}`, 'error'); }
+  finally { suppressHistory = false; updateUndoButtons(); }
+}
+function addObject(type='box') {
+  const names = {box:'Cube', sphere:'Sphere', plane:'Plane', cylinder:'Cylinder', cone:'Cone', light:'Point Light'};
+  const obj = {id:`obj-${crypto.randomUUID().slice(0,8)}`,name:names[type]||'Object',type,visible:true,p:[0,type==='plane'?0:0.5,0],r:[0,0,0],s:type==='plane'?[4,4,1]:[1,1,1],color:type==='light'?0xffffff:0x9a9aa3,rough:0.6,metal:0};
+  project.objects.push(obj); selectedId=obj.id; syncScene(); commit(); log(`${obj.name} created`, 'ok');
+}
+function removeSelected() { const o=project.objects.find(x=>x.id===selectedId); if(!o)return; project.objects=project.objects.filter(x=>x.id!==selectedId); selectedId=project.objects[0]?.id||null; syncScene(); commit(); log(`${o.name} deleted`); }
+function geometryFor(o) { switch(o.type){case 'plane':return new THREE.PlaneGeometry(1,1);case 'sphere':return new THREE.SphereGeometry(.5,24,16);case 'cylinder':return new THREE.CylinderGeometry(.5,.5,1,20);case 'cone':return new THREE.ConeGeometry(.5,1,20);default:return new THREE.BoxGeometry(1,1,1);} }
+function initScene() {
+  const host=$('scene'); scene=new THREE.Scene(); scene.background=new THREE.Color(0x171719); camera=new THREE.PerspectiveCamera(50,1,.1,1000); camera.position.set(8,7,10);
+  renderer=new THREE.WebGLRenderer({antialias:true}); renderer.setPixelRatio(Math.min(window.devicePixelRatio||1,2)); renderer.shadowMap.enabled=true; host.append(renderer.domElement);
+  controls=new OrbitControls(camera,renderer.domElement); controls.enableDamping=true; scene.add(new THREE.HemisphereLight(0xffffff,0x45454c,2)); const sun=new THREE.DirectionalLight(0xffffff,2); sun.position.set(5,9,6); sun.castShadow=true; scene.add(sun); scene.add(new THREE.GridHelper(40,40,0x4a4a50,0x303035));
+  gizmo=new TransformControls(camera,renderer.domElement); gizmo.addEventListener('dragging-changed',e=>controls.enabled=!e.value); gizmo.addEventListener('objectChange',()=>{syncObjectFromMesh();renderInspector(false)}); gizmo.addEventListener('mouseUp',()=>{syncObjectFromMesh();commit()}); scene.add(gizmo);
+  const resize=()=>{const w=host.clientWidth||1,h=host.clientHeight||1;renderer.setSize(w,h,false);camera.aspect=w/h;camera.updateProjectionMatrix();}; new ResizeObserver(resize).observe(host); window.addEventListener('resize',resize); resize();
+  renderer.domElement.addEventListener('dblclick',()=>{const o=project.objects.find(x=>x.id===selectedId);if(o){const name=prompt('Rename object',o.name);if(name?.trim()){o.name=name.trim();commit()}}});
+  renderer.domElement.addEventListener('click',event=>{if(event.button!==0||gizmo.dragging)return;const rect=renderer.domElement.getBoundingClientRect();const mouse=new THREE.Vector2(((event.clientX-rect.left)/rect.width)*2-1,-((event.clientY-rect.top)/rect.height)*2+1);const ray=new THREE.Raycaster();ray.setFromCamera(mouse,camera);const hits=ray.intersectObjects([...meshes.values()].filter(m=>m.userData.objectType!=='light'),false);if(hits.length){selectedId=hits[0].object.userData.objectId;renderTree();attachGizmo()}});
+  const tick=()=>{requestAnimationFrame(tick);controls.update();renderer.render(scene,camera)}; tick(); syncScene();
+}
+function syncScene() {
+  if(!scene)return;
+  for(const m of meshes.values()){scene.remove(m);m.geometry?.dispose();if(m.material?.dispose)m.material.dispose();for(const child of m.children){child.geometry?.dispose();child.material?.dispose?.()}}
+  meshes.clear();
+  for(const o of project.objects){let m;if(o.type==='light'){m=new THREE.PointLight(o.color??0xffffff,2,15);const helper=new THREE.Mesh(new THREE.SphereGeometry(.12,8,6),new THREE.MeshBasicMaterial({color:o.color??0xffffff}));m.add(helper)}else{m=new THREE.Mesh(geometryFor(o),new THREE.MeshStandardMaterial({color:o.color??0x9a9aa3,roughness:o.rough??.6,metalness:o.metal??0,side:o.type==='plane'?THREE.DoubleSide:THREE.FrontSide}));m.castShadow=true;m.receiveShadow=true}m.position.fromArray(o.p||[0,0,0]);m.rotation.fromArray(o.r||[0,0,0]);m.scale.fromArray(o.s||[1,1,1]);m.visible=o.visible!==false;m.userData.objectId=o.id;m.userData.objectType=o.type;scene.add(m);meshes.set(o.id,m)} attachGizmo();
+}
+function attachGizmo(){if(!gizmo){renderInspector();return}const m=meshes.get(selectedId);if(m){gizmo.attach(m);gizmo.setMode(transformMode);gizmo.setSpace(worldSpace?'world':'local');gizmo.setTranslationSnap(snap||null);gizmo.setScaleSnap(snap||null);gizmo.setRotationSnap(snap?THREE.MathUtils.degToRad(snap*15):null)}else gizmo.detach();renderInspector()}
+function syncObjectFromMesh(){const o=project.objects.find(x=>x.id===selectedId),m=meshes.get(selectedId);if(!o||!m)return;o.p=m.position.toArray();o.r=m.rotation.toArray().slice(0,3);o.s=m.scale.toArray()}
+function renderTree(){const root=$('tree');if(!root)return;root.replaceChildren();const filter=$('q').value.toLowerCase();for(const o of project.objects){if(filter&&!o.name.toLowerCase().includes(filter))continue;const row=document.createElement('div');row.className='row'+(o.id===selectedId?' sel':'')+(o.visible===false?' off':'');const icon=document.createElement('span');icon.className='t';icon.textContent=o.type==='light'?'â¼':o.type==='plane'?'â±':'â';const name=document.createElement('span');name.className='n';name.textContent=o.name;const vis=document.createElement('button');vis.title='Toggle visibility';vis.textContent=o.visible===false?'â':'â';vis.onclick=e=>{e.stopPropagation();o.visible=o.visible===false;const m=meshes.get(o.id);if(m)m.visible=o.visible;commit()};row.append(icon,name,vis);name.onclick=()=>{selectedId=o.id;renderTree();attachGizmo()};root.append(row)}if(!root.children.length){const e=document.createElement('div');e.className='empty';e.textContent='No objects';root.append(e)}}
+function field(parent,label,value,change,type='number',step='0.1'){const wrap=document.createElement('div');wrap.className='f';const lab=document.createElement('label');lab.textContent=label;const input=document.createElement('input');input.type=type;if(type==='number'){input.step=step;input.value=Number(value??0)}else input.value=value??'';input.addEventListener('change',()=>change(type==='number'?Number(input.value):input.value));wrap.append(lab,input);parent.append(wrap);return input}
+function renderInspector(){const root=$('insp');if(!root)return;root.replaceChildren();const o=project.objects.find(x=>x.id===selectedId);if(!o){const msg=document.createElement('div');msg.className='empty';msg.textContent='Select an object in the hierarchy or scene.';root.append(msg);const b=document.createElement('button');b.textContent='+ Add Cube';b.onclick=()=>addObject('box');root.append(b);return}
+  const identity=document.createElement('div');identity.className='sec';const h=document.createElement('h4');h.textContent='OBJECT';identity.append(h);field(identity,'Name',o.name,v=>{o.name=v;commit()},'text');const vis=document.createElement('label');vis.className='f';vis.textContent='Visible';const check=document.createElement('input');check.type='checkbox';check.checked=o.visible!==false;check.onchange=()=>{o.visible=check.checked;const m=meshes.get(o.id);if(m)m.visible=o.visible;commit()};vis.append(check);identity.append(vis);root.append(identity);
+  for(const [key,label] of [['p','POSITION'],['r','ROTATION'],['s','SCALE']]){const sec=document.createElement('div');sec.className='sec';const title=document.createElement('h4');title.textContent=label;sec.append(title);const vals=o[key]||[0,0,0];['X','Y','Z'].forEach((axis,i)=>field(sec,axis,vals[i],v=>{o[key][i]=v;const m=meshes.get(o.id);if(m){if(key==='p')m.position.fromArray(o.p);if(key==='r')m.rotation.set(...o.r);if(key==='s')m.scale.fromArray(o.s)}attachGizmo();commit()}));root.append(sec)}
+  const mat=document.createElement('div');mat.className='sec';const mh=document.createElement('h4');mh.textContent=o.type==='light'?'LIGHT COLOR':'MATERIAL';mat.append(mh);field(mat,'Color',`#${(o.color??0x9a9aa3).toString(16).padStart(6,'0')}`,v=>{o.color=parseInt(v.slice(1),16);const m=meshes.get(o.id);if(m?.isLight){m.color.set(v);if(m.children[0]?.material)m.children[0].material.color.set(v)}else if(m?.material)m.material.color.set(v);commit()},'color');if(o.type!=='light'){field(mat,'Roughness',o.rough??.6,v=>{o.rough=v;const m=meshes.get(o.id);if(m?.material)m.material.roughness=v;commit()});field(mat,'Metalness',o.metal??0,v=>{o.metal=v;const m=meshes.get(o.id);if(m?.material)m.material.metalness=v;commit()})}root.append(mat);const del=document.createElement('button');del.textContent='Delete object';del.onclick=removeSelected;root.append(del)}
+function renderFiles(){const root=$('flist');root.replaceChildren();const q=$('fsearch').value.toLowerCase();Object.keys(project.files||{}).sort().filter(p=>p.toLowerCase().includes(q)).forEach(path=>{const row=document.createElement('div');row.className='row'+(path===activeFile?' sel':'');const ico=document.createElement('span');ico.className='t';ico.textContent='â¤';const name=document.createElement('span');name.className='n';name.textContent=path;row.append(ico,name);row.onclick=()=>openFile(path);root.append(row)})}
+function openFile(path){if(!(path in project.files))return;activeFile=path;openedFiles.add(path);renderFiles();renderEditor();switchView('code')}
+function renderEditor(){const tabs=$('ctabs');tabs.replaceChildren();for(const path of [...openedFiles].filter(p=>p in project.files)){const tab=document.createElement('div');tab.className='ct'+(path===activeFile?' on':'');const label=document.createElement('span');label.textContent=path;const close=document.createElement('button');close.type='button';close.className='tab-close';close.textContent='Ã';close.title=`Close ${path}`;close.setAttribute('aria-label',`Close ${path}`);close.onclick=e=>{e.stopPropagation();openedFiles.delete(path);if(activeFile===path)activeFile=[...openedFiles].find(p=>p in project.files)||'';renderEditor()};tab.onclick=()=>{activeFile=path;renderEditor()};tab.append(label,close);tabs.append(tab)}const host=$('monaco');host.replaceChildren();if(!activeFile||!(activeFile in project.files)){const msg=document.createElement('div');msg.className='msg';msg.textContent='No open tabs. Open a file from the list.';host.append(msg);return}const editor=document.createElement('textarea');editor.id='editor';editor.spellcheck=false;editor.autocapitalize='off';editor.autocomplete='off';editor.value=String(project.files[activeFile]??'');editor.setAttribute('aria-label',`Editing ${activeFile}`);editor.addEventListener('input',()=>{project.files[activeFile]=editor.value;setDirty()});editor.addEventListener('keydown',e=>{if(e.key==='Tab'){e.preventDefault();editor.setRangeText('  ',editor.selectionStart,editor.selectionEnd,'end');editor.dispatchEvent(new Event('input'))}if((e.metaKey||e.ctrlKey)&&e.key.toLowerCase()==='s'){e.preventDefault();saveProject()}});host.append(editor)}
+function switchView(view){for(const b of document.querySelectorAll('[data-v]'))b.classList.toggle('on',b.dataset.v===view);for(const id of ['scene','code','preview','community'])$(id).hidden=id!==view;if(view==='scene'&&renderer){renderer.setSize($('scene').clientWidth||1,$('scene').clientHeight||1,false)}if(view==='community')community?.renderCommunity()}
+function dataUrlToBytes(dataUrl){const raw=atob(String(dataUrl).split(',')[1]||'');const out=new Uint8Array(raw.length);for(let i=0;i<raw.length;i++)out[i]=raw.charCodeAt(i);return out}
+function safeName(s){return String(s||'forge-project').toLowerCase().replace(/[^a-z0-9-_]+/g,'-').replace(/^-|-$/g,'')||'forge-project'}
+function downloadProject(){const files={...project.files,'forge-project.json':JSON.stringify(project,null,2),'README.txt':`Forge Studio project: ${project.name}\nOpen index.html to run the exported game.\n`};const used=new Set(Object.keys(files));for(const a of project.assets||[]){const name=String(a.name||'asset.bin').replace(/\\/g,'/').split('/').pop().replace(/[^a-zA-Z0-9._ -]/g,'_')||'asset.bin';let dest=`assets/${name}`,n=2;while(used.has(dest))dest=`assets/${n++}-${name}`;used.add(dest);try{files[dest]=dataUrlToBytes(a.dataUrl)}catch(e){log(`Could not export asset ${name}: ${e.message}`,'warn')}}files['assets/manifest.json']=JSON.stringify((project.assets||[]).map(({id,name,type,size})=>({id,name,type,size})),null,2);downloadBlob(zip(files),`${safeName(project.name)}.zip`);log('Project ZIP exported','ok')}
+function resetProjectUI(){selectedId=project.objects[0]?.id||null;activeFile=project.files['game.js']!==undefined?'game.js':Object.keys(project.files)[0]||'';openedFiles.clear();for(const p of ['index.html','style.css','game.js'])if(p in project.files)openedFiles.add(p);if(activeFile)openedFiles.add(activeFile);history.reset(JSON.stringify(project));syncScene();renderTree();renderInspector();renderFiles();renderEditor();community?.renderDock();$('pname').textContent=project.name;dirty=false;$('save').textContent='Loaded project'}
+async function newProjectFlow(){if(dirty&&!confirm('Discard unsaved changes?'))return;const name=prompt('Project name','Untitled Project');if(name===null)return;project=newProject(name.trim()||'Untitled Project');resetProjectUI();setDirty();switchView('scene')}
+function openProjectFlow(){const input=document.createElement('input');input.type='file';input.accept='.json,application/json';input.onchange=async()=>{const file=input.files?.[0];if(!file)return;try{project=migrate(JSON.parse(await file.text()));resetProjectUI();setDirty();log('Project JSON imported','ok')}catch(e){log(`Import failed: ${e.message}`,'error')}};input.click()}
+async function openLocalProjectFlow(){try{const saved=(await provider.list()).sort((a,b)=>(b.updated||0)-(a.updated||0));if(!saved.length){alert('No saved local projects were found in this browser on this device.');return}const options=saved.map((p,i)=>`${i+1}. ${p.name||'Untitled Project'}`).join('\n');const answer=prompt('Open a saved IndexedDB project:\n\n'+options+'\n\nEnter its number:','1');if(answer===null)return;const i=Number(answer)-1;if(!Number.isInteger(i)||i<0||i>=saved.length){alert('Invalid project number.');return}if(dirty&&!confirm('Replace the current project?'))return;project=migrate(saved[i]);resetProjectUI();log(`Opened local project: ${project.name}`,'ok')}catch(e){log(`Could not open local projects: ${e.message}`,'error');alert(`Could not open local projects.\n${e.message}`)}}
+function setupMenus(){const groups=[['File',[['New project',newProjectFlow],['Open project JSON',openProjectFlow],['Open saved IndexedDB project',openLocalProjectFlow],['Save now',saveProject],['Export project ZIP',downloadProject]]],['Create',[['Cube',()=>addObject('box')],['Sphere',()=>addObject('sphere')],['Plane',()=>addObject('plane')],['Cylinder',()=>addObject('cylinder')],['Cone',()=>addObject('cone')],['Point light',()=>addObject('light')],['Delete selected',removeSelected]]],['View',[['Scene',()=>switchView('scene')],['Code editor',()=>switchView('code')],['Game preview',()=>switchView('preview')],['Community',()=>switchView('community')],['Project Files dock',()=>showDock('files')],['Console dock',()=>showDock('console')]]],['Help',[['About Forge Studio',()=>alert('Forge Studio\nBrowser-based game editor. Projects autosave to this browser; use Export ZIP for backups.')]]]];const host=$('menus');host.replaceChildren();for(const [label,actions] of groups){const b=document.createElement('button');b.textContent=label;b.onclick=()=>{document.querySelectorAll('.menu-pop').forEach(x=>x.remove());const pop=document.createElement('div');pop.className='menu-pop';const r=b.getBoundingClientRect();pop.style.top=`${Math.min(window.innerHeight-180,r.bottom)}px`;pop.style.left=`${Math.max(6,Math.min(r.left,window.innerWidth-230))}px`;for(const [text,fn] of actions){const item=document.createElement('button');item.textContent=text;item.onclick=()=>{pop.remove();fn()};pop.append(item)}document.body.append(pop);const close=e=>{if(!pop.contains(e.target)&&e.target!==b){pop.remove();document.removeEventListener('pointerdown',close)}};setTimeout(()=>document.addEventListener('pointerdown',close),0)};host.append(b)}}
+function showDock(which){document.querySelectorAll('[data-bottom]').forEach(b=>b.classList.toggle('on',b.dataset.bottom===which));$('log').hidden=which==='files';$('consoleTools').hidden=which==='files';$('projectDock').hidden=which!=='files';if(which==='files')community?.renderDock()}
+function setupResize(){const bind=(id,side)=>{const el=$(id);let startX,startW;el.addEventListener('pointerdown',e=>{if(innerWidth<821)return;startX=e.clientX;startW=side==='left'?$('explorer').offsetWidth:$('inspector').offsetWidth;const move=ev=>{const d=ev.clientX-startX;if(side==='left')$('explorer').style.width=Math.max(140,Math.min(360,startW+d))+'px';else $('inspector').style.width=Math.max(180,Math.min(420,startW-d))+'px'};const up=()=>{window.removeEventListener('pointermove',move);window.removeEventListener('pointerup',up)};window.addEventListener('pointermove',move);window.addEventListener('pointerup',up)})};bind('rzL','left');bind('rzR','right');$('rzB').addEventListener('pointerdown',e=>{const y=e.clientY,h=$('bottom').offsetHeight;const move=ev=>$('bottom').style.flexBasis=Math.max(65,Math.min(innerHeight*.5,h+y-ev.clientY))+'px';const up=()=>{window.removeEventListener('pointermove',move);window.removeEventListener('pointerup',up)};window.addEventListener('pointermove',move);window.addEventListener('pointerup',up)})}
+function setup() {
+  setupMenus();
+  try { initScene() } catch(e) { log(`3D scene unavailable: ${e.stack||e.message||e}`,'error');$('scene').textContent='3D scene unavailable. Code and project tools may still work.' }
+  history.reset(JSON.stringify(project));selectedId=project.objects.find(o=>o.id==='cube1')?.id||project.objects[0]?.id;renderTree();renderInspector();renderFiles();renderEditor();updateUndoButtons();$('pname').textContent=project.name;
+  community=setupCommunity({getProject:()=>project,markDirty:()=>{setDirty();snapshot()},openFile,createFile:()=> $('fnew').click(),switchView,log});
+  document.querySelectorAll('[data-v]').forEach(b=>b.onclick=()=>switchView(b.dataset.v));
+  document.querySelectorAll('[data-bottom]').forEach(b=>b.onclick=()=>showDock(b.dataset.bottom));
+  $('q').addEventListener('input',renderTree);$('fsearch').addEventListener('input',renderFiles);
+  $('fnew').onclick=()=>{let path=prompt('New file path (example: scripts/player.js)');if(!path)return;path=path.trim();if(path.startsWith('/')||path.split('/').includes('..')||path.includes('\\'))return log('Use a safe relative path without ..','warn');if(path in project.files)return log('That file already exists','warn');project.files[path]='';activeFile=path;openedFiles.add(path);commit();renderEditor();switchView('code')};
+  $('fren').onclick=()=>{if(!activeFile)return;const path=prompt('Rename file',activeFile)?.trim();if(!path||path===activeFile)return;if(path.startsWith('/')||path.split('/').includes('..')||path in project.files)return log('Invalid path or file already exists','warn');project.files[path]=project.files[activeFile];delete project.files[activeFile];openedFiles.delete(activeFile);activeFile=path;openedFiles.add(path);commit();renderEditor()};
+  $('fdel').onclick=()=>{if(!activeFile||!confirm(`Delete ${activeFile}?`))return;delete project.files[activeFile];openedFiles.delete(activeFile);activeFile=[...openedFiles].find(p=>p in project.files)||'';commit();renderEditor()};
+  $('bundo').onclick=()=>restore(history.undo());$('bredo').onclick=()=>restore(history.redo());
+  document.querySelectorAll('[data-t]').forEach(b=>b.onclick=()=>{transformMode=b.dataset.t;document.querySelectorAll('[data-t]').forEach(x=>x.classList.toggle('on',x===b));if(gizmo)gizmo.setMode(transformMode)});
+  $('space').onclick=()=>{worldSpace=!worldSpace;$('space').textContent=worldSpace?'World':'Local';if(gizmo)gizmo.setSpace(worldSpace?'world':'local')};$('snap').onchange=()=>{snap=Number($('snap').value);attachGizmo()};
+  $('run').onclick=()=>{try{switchView('preview');const missing=runPreview($('pframe'),project.files);if(missing.length)log('Missing linked file(s): '+missing.join(', '),'warn');log('Preview started in sandbox','ok')}catch(e){log(`Preview error: ${e.stack||e.message}`,'error')}};$('stop').onclick=()=>{stopPreview($('pframe'));log('Preview stopped')};
+  $('localOpen').onclick=openLocalProjectFlow;
+  $('clr').onclick=()=>$('log').replaceChildren();$('lvl').onchange=()=>{const v=$('lvl').value;for(const row of $('log').children)row.hidden=v==='warn'?!row.classList.contains('warn')&&!row.classList.contains('error'):v==='error'&&!row.classList.contains('error')};
+  $('mE').onclick=()=>$('explorer').classList.toggle('open');$('mI').onclick=()=>$('inspector').classList.toggle('open');
+  document.addEventListener('keydown',e=>{if(['INPUT','TEXTAREA','SELECT'].includes(document.activeElement?.tagName))return;if(e.key.toLowerCase()==='q')setMode('select');if(e.key.toLowerCase()==='w')setMode('translate');if(e.key.toLowerCase()==='e')setMode('rotate');if(e.key.toLowerCase()==='r')setMode('scale');if(e.key==='Delete'||e.key==='Backspace')removeSelected();if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='s'){e.preventDefault();saveProject()}if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='z'){e.preventDefault();restore(history.undo())}if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='y'){e.preventDefault();restore(history.redo())}});
+  function setMode(mode){transformMode=mode;document.querySelectorAll('[data-t]').forEach(b=>b.classList.toggle('on',b.dataset.t===mode));if(gizmo)gizmo.setMode(mode)}
+  window.addEventListener('beforeunload',e=>{if(dirty){e.preventDefault();e.returnValue=''}});setupResize();
+  provider.list().then(list=>{if(!list.length)return;const newest=[...list].sort((a,b)=>(b.updated||0)-(a.updated||0))[0];if(confirm(`Open your last saved project â${newest.name}â?`)){project=migrate(newest);resetProjectUI()}}).catch(e=>log(`IndexedDB unavailable: ${e.message}`,'warn'));
+  log('Forge Studio ready. Local autosave is enabled.','ok');
+}
+window.addEventListener('message',e=>{const d=e.data;if(!d||d.forge!==1)return;log(d.m,d.k==='error'?'error':d.k==='warn'?'warn':'info')});
+import('./firebase.js').then(m=>{firebaseReady=m.firebaseReady;getCurrentUser=m.getCurrentUser;signInOrCreate=m.signInOrCreate;signOut=m.signOut;saveCloudProject=m.saveCloudProject;listCloudProjects=m.listCloudProjects;onAuthChange=m.onAuthChange;onAuthChange(user=>{ $('authBtn').textContent=user?'Sign out':'Sign in';$('cloudStatus').textContent=user?'Cloud: '+(user.email||'signed in'):'Cloud: signed out';$('cloudSave').disabled=!user;$('cloudOpen').disabled=!user;});$('authBtn').onclick=async()=>{try{await firebaseReady;const user=getCurrentUser();if(user){await signOut();return}const email=prompt('Email address for your Forge account');if(!email)return;const password=prompt('Password (at least 6 characters)');if(!password)return;const create=confirm('Create a new account? Choose Cancel to sign in.');await signInOrCreate(email.trim(),password,create)}catch(e){log(`Authentication failed: ${e.message}`,'error');alert(e.message)}};$('cloudSave').onclick=async()=>{try{await firebaseReady;if(!getCurrentUser())return alert('Sign in first.');await saveCloudProject(project);$('cloudStatus').textContent='Cloud: synced';log('Cloud project saved','ok')}catch(e){log(`Cloud save failed: ${e.message}`,'error')}};$('cloudOpen').onclick=async()=>{try{await firebaseReady;if(!getCurrentUser())return alert('Sign in first.');const list=await listCloudProjects();if(!list.length)return alert('No cloud projects found.');const answer=prompt('Choose cloud project number:\n'+list.map((p,i)=>`${i+1}. ${p.name}`).join('\n'),'1');if(answer===null)return;const i=Number(answer)-1;if(!Number.isInteger(i)||i<0||i>=list.length)return alert('Invalid project number');if(dirty&&!confirm('Replace current project?'))return;project=migrate(list[i].project);resetProjectUI();log(`Loaded cloud project: ${project.name}`,'ok')}catch(e){log(`Cloud load failed: ${e.message}`,'error')}}}).catch(e=>{if($('cloudStatus'))$('cloudStatus').textContent='Cloud unavailable';console.warn('Firebase unavailable; local features remain available',e)});
+setup();
