@@ -1,240 +1,44 @@
-
 const $ = id => document.getElementById(id);
 const MAX_FILE_SIZE = 20 * 1024 * 1024;
-
-const RESOURCES = [
-  ['Kenney', 'Free game assets, models and UI', 'assets models sprites ui', 'https://kenney.nl/assets'],
-  ['Poly Haven', 'Textures, HDRIs and 3D models', 'textures models hdr environment', 'https://polyhaven.com'],
-  ['ambientCG', 'Materials and PBR textures', 'materials pbr textures', 'https://ambientcg.com'],
-  ['OpenGameArt', 'Community-created game assets', 'sprites music models art', 'https://opengameart.org'],
-  ['Freesound', 'Sound effects and audio', 'audio sound effects music', 'https://freesound.org'],
-  ['itch.io', 'Game assets and asset packs', 'game assets packs sprites', 'https://itch.io/game-assets'],
-  ['Three.js Examples', 'Interactive 3D examples', 'three js webgl 3d', 'https://threejs.org/examples/']
-];
-
-const allowedTypes = new Set([
-  'png', 'jpg', 'jpeg', 'webp', 'gif', 'svg',
-  'glb', 'gltf', 'obj', 'mtl', 'fbx',
-  'wav', 'mp3', 'ogg',
-  'mp4', 'webm', 'json', 'txt',
-  'hdr', 'exr', 'ttf', 'otf', 'css', 'js'
-]);
-
-function make(tag, className, text) {
-  const el = document.createElement(tag);
-  if (className) el.className = className;
-  if (text !== undefined) el.textContent = text;
-  return el;
+const API_BASE = (document.querySelector('meta[name="forge-community-api"]')?.content || '/api/community').replace(/\/$/, '');
+const allowedTypes = new Set(['png','jpg','jpeg','webp','gif','svg','glb','gltf','obj','mtl','fbx','wav','mp3','ogg','mp4','webm','json','txt','hdr','exr','ttf','otf','css','js','zip']);
+const fmt = n => n < 1048576 ? `${(n/1024).toFixed(1)} KB` : `${(n/1048576).toFixed(1)} MB`;
+const el = (tag, cls, text) => { const n=document.createElement(tag); if(cls)n.className=cls; if(text!==undefined)n.textContent=text; return n; };
+const ext = name => String(name).split('.').pop().toLowerCase();
+const safeUrl = value => { try { const u=new URL(value,location.href); return ['https:','http:'].includes(u.protocol) ? u.href : ''; } catch { return ''; } };
+function card({title,description,thumbnail,url,source,author,license,buttons=[]}) {
+  const root=el('article','community-card');
+  if(thumbnail){const img=el('img');img.loading='lazy';img.alt='Preview for '+title;img.src=thumbnail;img.onerror=()=>img.remove();root.append(img)}
+  root.append(el('strong','',title||'Untitled asset'));
+  if(description)root.append(el('p','',description));
+  const meta=el('div','asset-owner',[source,author,license].filter(Boolean).join(' Â· '));root.append(meta);
+  if(url){const a=el('a','','View source â');a.href=safeUrl(url);a.target='_blank';a.rel='noopener noreferrer';if(a.href)root.append(a)}
+  const actions=el('div','actions');for(const b of buttons)actions.append(b);if(actions.children.length)root.append(actions);return root;
 }
-
-function extension(name) {
-  return name.includes('.') ? name.split('.').pop().toLowerCase() : '';
-}
-
-function formatSize(bytes) {
-  return bytes < 1024 * 1024
-    ? `${(bytes / 1024).toFixed(1)} KB`
-    : `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-function readFile(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result);
-    reader.onerror = () => reject(new Error(`Could not read ${file.name}`));
-    reader.readAsDataURL(file);
-  });
-}
-
-export function setupCommunity({
-  getProject,
-  markDirty,
-  openFile,
-  createFile,
-  switchView,
-  log
-}) {
-  const project = getProject;
-
-  function renderCommunity() {
-    const grid = $('assetGrid');
-    if (!grid) return;
-
-    const query = ($('assetSearch')?.value || '').trim().toLowerCase();
-    grid.replaceChildren();
-
-    const results = RESOURCES.filter(([name, desc, tags]) =>
-      `${name} ${desc} ${tags}`.toLowerCase().includes(query)
-    );
-
-    for (const [name, description, , url] of results) {
-      const card = make('article', 'asset-card');
-      const title = make('strong', '', name);
-      const details = make('p', '', description);
-      const link = make('a', '', 'Open resource ↗');
-
-      link.href = url;
-      link.target = '_blank';
-      link.rel = 'noopener noreferrer';
-
-      card.append(title, details, link);
-      grid.append(card);
-    }
-
-    if (!results.length) {
-      grid.append(make('p', 'empty', 'No matching resources found.'));
+export function setupCommunity({getProject,markDirty,openFile,createFile,switchView,log}) {
+  let publicResults=[],communityResults=[];
+  const currentProject=getProject;
+  function status(message){$('communityStatus').textContent=message}
+  function renderCommunity(){renderPublic();renderUploads()}
+  function renderPublic(){const root=$('assetGrid');root.replaceChildren();if(!publicResults.length){root.append(el('p','empty','No public results yet. Search for something above.'));return}
+    for(const item of publicResults){const importBtn=el('button','','Import');importBtn.onclick=async()=>{try{const response=await fetch(item.download);if(!response.ok)throw new Error('Download failed');const blob=await response.blob();if(blob.size>MAX_FILE_SIZE)throw new Error('Asset exceeds 20 MB import limit');const filename=(item.title||'community-asset').replace(/[\\/:*?"<>|]/g,'_').slice(0,100)+'.'+(blob.type.split('/')[1]||'bin').replace(/[^a-z0-9]/gi,'');const file=new File([blob],filename,{type:blob.type||'application/octet-stream'});await importIntoProject([file]);log('Imported public asset: '+filename,'ok')}catch(e){status('Could not import this result: '+e.message);log('Public asset import failed: '+e.message,'warn')}};root.append(card({...item,buttons:[importBtn]}))}
+  }
+  function renderUploads(){const root=$('communityUploads');root.replaceChildren();if(!communityResults.length){root.append(el('p','empty','No Forge uploads loaded yet. If the API is not configured, this section cannot be shared between visitors.'));return}
+    for(const item of communityResults){const buttons=[];const getBtn=el('button','','Download');getBtn.onclick=()=>{const u=safeUrl(item.downloadUrl||item.url);if(u)location.href=u};buttons.push(getBtn);
+      const token=localStorage.getItem('forge-delete-token:'+item.id);if(token){const del=el('button','','Delete my upload');del.onclick=async()=>{if(!confirm(`Delete your upload â${item.title}â?`))return;try{const res=await fetch(`${API_BASE}/assets/${encodeURIComponent(item.id)}`,{method:'DELETE',headers:{'X-Delete-Token':token}});if(!res.ok)throw new Error((await res.json().catch(()=>({}))).error||`HTTP ${res.status}`);localStorage.removeItem('forge-delete-token:'+item.id);log('Deleted community upload: '+item.title,'ok');await loadCommunityUploads()}catch(e){status('Delete failed: '+e.message)}};buttons.push(del)}
+      root.append(card({title:item.title,description:item.description,thumbnail:item.thumbnailUrl||item.previewUrl,url:item.downloadUrl||item.url,source:'Forge Community',author:item.author||'Community member',license:item.license||'Creator upload',buttons}));
     }
   }
-
-  function renderDock() {
-    const current = project();
-    const filesRoot = $('projectDockFiles');
-    const assetsRoot = $('projectDockAssets');
-    if (!filesRoot || !assetsRoot) return;
-
-    const query = ($('dockSearch')?.value || '').toLowerCase();
-    filesRoot.replaceChildren();
-    assetsRoot.replaceChildren();
-
-    filesRoot.append(make('div', 'dock-section-title', 'PROJECT FILES'));
-
-    for (const path of Object.keys(current.files || {}).sort()) {
-      if (!path.toLowerCase().includes(query)) continue;
-
-      const row = make('div', 'project-file');
-      row.append(
-        make('span', 't', '▤'),
-        make('span', 'n', path)
-      );
-
-      row.title = `Open ${path}`;
-      row.tabIndex = 0;
-      row.setAttribute('role', 'button');
-      row.onclick = () => openFile(path);
-      row.onkeydown = e => {
-        if (e.key === 'Enter' || e.key === ' ') {
-          e.preventDefault();
-          openFile(path);
-        }
-      };
-
-      filesRoot.append(row);
-    }
-
-    assetsRoot.append(make('div', 'dock-section-title', 'IMPORTED ASSETS'));
-
-    const assets = Array.isArray(current.assets) ? current.assets : [];
-
-    const filtered = assets.filter(asset =>
-      asset.name.toLowerCase().includes(query)
-    );
-
-    if (!filtered.length) {
-      assetsRoot.append(make('div', 'empty', 'No imported assets yet.'));
-    }
-
-    for (const asset of filtered) {
-      const row = make('div', 'project-file');
-      row.append(
-        make('span', 't', '◇'),
-        make('span', 'n', `${asset.name} · ${formatSize(asset.size)}`)
-      );
-
-      const remove = make('button', '', '×');
-      remove.title = `Remove ${asset.name}`;
-      remove.onclick = e => {
-        e.stopPropagation();
-
-        if (!confirm(`Remove "${asset.name}" from this project?`)) return;
-
-        current.assets = current.assets.filter(a => a.id !== asset.id);
-        markDirty();
-        renderDock();
-        log(`Removed asset: ${asset.name}`);
-      };
-
-      row.append(remove);
-      assetsRoot.append(row);
-    }
+  async function loadCommunityUploads(){try{const res=await fetch(`${API_BASE}/assets`,{headers:{Accept:'application/json'}});if(!res.ok)throw new Error(`HTTP ${res.status}`);const data=await res.json();communityResults=Array.isArray(data)?data:(data.assets||[]);renderUploads();status(`${communityResults.length} shared Forge upload(s) loaded.`)}catch(e){communityResults=[];renderUploads();status('Shared uploads need the Forge Community API running at '+API_BASE+'. Public media search still works.')}}
+  async function searchPublic(){const query=$('assetSearch').value.trim();if(!query){publicResults=[];renderPublic();status('Enter a search term to search public media.');return}const source=$('assetSource').value;publicResults=[];renderPublic();status('Searching public mediaâ¦');
+    if(source==='community'){await loadCommunityUploads();return}
+    try{const url=new URL('https://commons.wikimedia.org/w/api.php');url.search=new URLSearchParams({action:'query',generator:'search',gsrsearch:query,gsrnamespace:'6',gsrlimit:'24',prop:'imageinfo',iiprop:'url|size|mime|extmetadata',iiurlwidth:'360',format:'json',origin:'*'}).toString();const res=await fetch(url);if(!res.ok)throw new Error(`Wikimedia returned HTTP ${res.status}`);const data=await res.json();const pages=Object.values(data.query?.pages||{});publicResults=pages.map(p=>{const info=p.imageinfo?.[0]||{};const meta=info.extmetadata||{};const clean=x=>String(x?.value||'').replace(/<[^>]*>/g,'').trim();return{title:p.title?.replace(/^File:/,''),description:clean(meta.ImageDescription)||'Public media file from Wikimedia Commons.',thumbnail:info.thumburl||info.url,url:info.descriptionurl||info.url,download:info.url,source:'Wikimedia Commons',author:clean(meta.Artist),license:clean(meta.LicenseShortName)||'Check source license'}}).filter(x=>x.download&&safeUrl(x.download));renderPublic();status(`${publicResults.length} public result(s) found. Review the source license before using an asset.`)}catch(e){status('Public media search failed: '+e.message);log('Community search failed: '+e.message,'warn')}
   }
-
-  async function importAssets() {
-    const input = document.createElement('input');
-    input.type = 'file';
-    input.multiple = true;
-    input.accept = [...allowedTypes].map(ext => `.${ext}`).join(',');
-
-    input.onchange = async () => {
-      const files = [...(input.files || [])];
-      if (!files.length) return;
-
-      const current = project();
-      if (!Array.isArray(current.assets)) current.assets = [];
-
-      for (const file of files) {
-        if (!allowedTypes.has(extension(file.name))) {
-          log(`Skipped unsupported file: ${file.name}`, 'warn');
-          continue;
-        }
-
-        if (file.size > MAX_FILE_SIZE) {
-          log(`Skipped ${file.name}: maximum size is 20 MB per file.`, 'warn');
-          continue;
-        }
-
-        if (current.assets.some(a => a.name === file.name)) {
-          log(`Skipped duplicate filename: ${file.name}`, 'warn');
-          continue;
-        }
-
-        try {
-          current.assets.push({
-            id: crypto.randomUUID(),
-            name: file.name,
-            type: file.type || 'application/octet-stream',
-            size: file.size,
-            dataUrl: await readFile(file)
-          });
-
-          log(`Imported asset: ${file.name}`, 'ok');
-        } catch (error) {
-          log(error.message, 'error');
-        }
-      }
-
-      markDirty();
-      renderDock();
-    };
-
-    input.click();
-  }
-
-  $('assetSearch')?.addEventListener('input', renderCommunity);
-  $('importAsset')?.addEventListener('click', importAssets);
-  $('dockImport')?.addEventListener('click', importAssets);
-  $('dockSearch')?.addEventListener('input', renderDock);
-
-  $('dockNew')?.addEventListener('click', createFile);
-
-  document.querySelectorAll('[data-bottom]').forEach(button => {
-    button.addEventListener('click', () => {
-      const showFiles = button.dataset.bottom === 'files';
-
-      document.querySelectorAll('[data-bottom]').forEach(tab => {
-        tab.classList.toggle('on', tab === button);
-      });
-
-      $('log').hidden = showFiles;
-      $('consoleTools').hidden = showFiles;
-      $('projectDock').hidden = !showFiles;
-
-      if (showFiles) renderDock();
-    });
-  });
-
-  return {
-    renderCommunity,
-    renderDock,
-    importAssets
-  };
+  async function importIntoProject(files){const p=currentProject();p.assets=Array.isArray(p.assets)?p.assets:[];for(const file of files){if(!allowedTypes.has(ext(file.name))){log('Skipped unsupported file: '+file.name,'warn');continue}if(file.size>MAX_FILE_SIZE){log('Skipped '+file.name+': maximum size is 20 MB.','warn');continue}if(p.assets.some(a=>a.name===file.name)){log('Skipped duplicate asset name: '+file.name,'warn');continue}const dataUrl=await new Promise((resolve,reject)=>{const r=new FileReader();r.onload=()=>resolve(r.result);r.onerror=()=>reject(new Error('Could not read '+file.name));r.readAsDataURL(file)});p.assets.push({id:crypto.randomUUID(),name:file.name,type:file.type||'application/octet-stream',size:file.size,dataUrl});log('Imported asset: '+file.name,'ok')}markDirty();renderDock()}
+  function chooseFiles(multiple=true){const input=el('input');input.type='file';input.multiple=multiple;input.accept=[...allowedTypes].map(x=>'.'+x).join(',');input.onchange=()=>importIntoProject([...(input.files||[])]).catch(e=>log(e.message,'error'));input.click()}
+  async function uploadCreation(){const input=el('input');input.type='file';input.accept=[...allowedTypes].map(x=>'.'+x).join(',');input.onchange=async()=>{const file=input.files?.[0];if(!file)return;if(file.size>MAX_FILE_SIZE){status('Maximum upload size is 20 MB.');return}const title=prompt('Name your creation',file.name.replace(/\.[^.]+$/,''));if(!title?.trim())return;const description=prompt('Short description (optional)','')||'';const author=prompt('Creator name (optional)','')||'Community member';const form=new FormData();form.append('file',file);form.append('title',title.trim());form.append('description',description.slice(0,500));form.append('author',author.slice(0,80));form.append('license','Creator upload');status('Uploading creationâ¦');try{const res=await fetch(`${API_BASE}/upload`,{method:'POST',body:form});const data=await res.json().catch(()=>({}));if(!res.ok)throw new Error(data.error||`HTTP ${res.status}`);if(data.deleteToken)localStorage.setItem('forge-delete-token:'+data.asset.id,data.deleteToken);log('Shared creation uploaded: '+title,'ok');status('Upload shared with the community.');await loadCommunityUploads()}catch(e){status('Upload failed: '+e.message+'. The Community API must be deployed for public sharing.');log('Community upload failed: '+e.message,'warn')}};input.click()}
+  function renderDock(){const p=currentProject(),files=$('projectDockFiles'),assets=$('projectDockAssets');if(!files||!assets)return;files.replaceChildren();assets.replaceChildren();const query=($('dockSearch').value||'').toLowerCase();files.append(el('div','dock-section-title','PROJECT FILES'));for(const path of Object.keys(p.files||{}).sort().filter(x=>x.toLowerCase().includes(query))){const row=el('div','project-file');row.append(el('span','t','â¤'),el('span','n',path));row.title='Open '+path;row.onclick=()=>openFile(path);files.append(row)}assets.append(el('div','dock-section-title','IMPORTED ASSETS'));const items=(p.assets||[]).filter(a=>a.name.toLowerCase().includes(query));if(!items.length)assets.append(el('div','empty','No imported assets.'));for(const asset of items){const row=el('div','project-file');row.append(el('span','t','â'),el('span','n',`${asset.name} Â· ${fmt(asset.size)}`));const del=el('button','','Ã');del.title='Remove imported asset';del.onclick=e=>{e.stopPropagation();if(!confirm(`Remove â${asset.name}â from this project?`))return;p.assets=p.assets.filter(a=>a.id!==asset.id);markDirty();renderDock();log('Removed asset: '+asset.name)};row.append(del);assets.append(row)}}
+  $('assetSearch').addEventListener('keydown',e=>{if(e.key==='Enter')searchPublic()});$('communitySearch').addEventListener('click',searchPublic);$('assetSource').addEventListener('change',()=>{if($('assetSource').value==='community')loadCommunityUploads()});$('communityUpload').addEventListener('click',uploadCreation);$('importAsset').addEventListener('click',()=>chooseFiles(true));$('dockImport').addEventListener('click',()=>chooseFiles(true));$('dockSearch').addEventListener('input',renderDock);$('dockNew').addEventListener('click',createFile);
+  document.querySelectorAll('[data-bottom]').forEach(button=>button.addEventListener('click',()=>{const files=button.dataset.bottom==='files';$('log').hidden=files;$('consoleTools').hidden=files;$('projectDock').hidden=!files;document.querySelectorAll('[data-bottom]').forEach(b=>b.classList.toggle('on',b===button));if(files)renderDock()}));
+  loadCommunityUploads();renderPublic();return{renderCommunity,renderDock,importAssets:()=>chooseFiles(true),searchPublic,loadCommunityUploads};
 }
